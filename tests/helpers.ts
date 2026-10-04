@@ -1,46 +1,74 @@
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { vi } from "vitest";
-import type {
-  Clock,
-  Logger,
-  Route,
-  RuntimeConfig,
-  WorkerDeployment,
-} from "../src/types.js";
+import { registerConfigForRedaction } from "../src/config.js";
+import type { Clock, Logger, RuntimeConfig } from "../src/types.js";
 
 export const config: RuntimeConfig = {
-  token: "test-token",
-  accountId: "account-id",
-  zoneId: "zone-id",
+  token: "test-token-value-0123456789",
+  accountId: "account-id-0123456789abcdef",
+  zoneId: "zone-id-0123456789abcdef",
   stableWorker: "agentbench-route-stable",
   candidateWorker: "agentbench-route-candidate",
   productionHostname: "agentbench-prod.example.test",
   canaryHostname: "agentbench-canary.example.test",
 };
 
-export const productionRoute: Route = {
-  id: "route-production",
-  pattern: `${config.productionHostname}/*`,
-  script: config.stableWorker,
-};
+registerConfigForRedaction(config);
 
-export const canaryRoute: Route = {
-  id: "route-canary",
-  pattern: `${config.canaryHostname}/*`,
-  script: config.stableWorker,
-};
+export const productionPattern = `${config.productionHostname}/*`;
+export const canaryPattern = `${config.canaryHostname}/*`;
 
-export const deployment: WorkerDeployment = {
-  id: "deployment-v1",
-  source: "api",
-  createdOn: "2025-08-23T00:00:00.000Z",
-};
+export interface TestClock extends Clock {
+  advance(milliseconds: number): void;
+  slept: number[];
+}
 
-export const clock: Clock = {
-  now: () => new Date("2025-08-23T00:00:00.000Z"),
-  sleep: vi.fn(async () => undefined),
-};
+/** Sleeps advance the clock instead of waiting, so tests stay fast. */
+export function testClock(start = "2026-01-01T00:00:00.000Z"): TestClock {
+  let current = new Date(start).getTime();
+  const slept: number[] = [];
+  return {
+    now: () => new Date(current),
+    sleep: async (milliseconds: number) => {
+      slept.push(milliseconds);
+      current += milliseconds;
+    },
+    advance: (milliseconds: number) => {
+      current += milliseconds;
+    },
+    slept,
+  };
+}
 
-export const logger: Logger = {
-  info: vi.fn(),
-  error: vi.fn(),
-};
+export function testLogger(): Logger {
+  return { info: vi.fn(), error: vi.fn() };
+}
+
+export async function workspace(prefix = "rollout-"): Promise<{
+  readonly directory: string;
+  readonly journalPath: string;
+  readonly lockPath: string;
+  readonly evidencePath: string;
+}> {
+  const directory = await mkdtemp(join(tmpdir(), prefix));
+  return {
+    directory,
+    journalPath: join(directory, ".rollout", "journal.json"),
+    lockPath: join(directory, ".rollout", "lock.json"),
+    evidencePath: join(directory, "artifacts", "evidence.json"),
+  };
+}
+
+/** Asserts presence without a non-null assertion, which lint forbids. */
+export function must<T>(value: T | null | undefined, what: string): T {
+  if (value === null || value === undefined)
+    throw new Error(`expected ${what} to be present`);
+  return value;
+}
+
+export async function readJson<T>(path: string): Promise<T> {
+  const { readFile } = await import("node:fs/promises");
+  return JSON.parse(await readFile(path, "utf8")) as T;
+}
