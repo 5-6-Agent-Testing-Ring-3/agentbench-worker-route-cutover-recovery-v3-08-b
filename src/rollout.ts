@@ -453,9 +453,11 @@ export async function applyRollout(
     recovery: resumable?.recovery ?? null,
   };
 
+  const written: { evidence: boolean } = { evidence: false };
   const finish = async (outcome: Evidence["outcome"]): Promise<Evidence> => {
     const evidence = buildEvidence(draft, journal, outcome, clock, config);
     await writeEvidenceFile(options.evidencePath, evidence);
+    written.evidence = true;
     return evidence;
   };
 
@@ -480,11 +482,8 @@ export async function applyRollout(
       );
 
     if (plan.noop && !options.rollbackDrill) {
-      journal = advance(journal, "completed", { completed: true }, clock);
-      await journalStore.write(journal);
-      logger.info("Rollout is already in the intended state; nothing to do", {
-        runId,
-      });
+      // Verify before recording completion, so the journal never claims a
+      // finished rollout that live state does not support.
       draft.finalVerification = await verifyProduction(
         client,
         config,
@@ -497,6 +496,11 @@ export async function applyRollout(
         throw new ValidationError(
           `production is not coherent: ${draft.finalVerification.problems.join("; ")}`,
         );
+      journal = advance(journal, "completed", { completed: true }, clock);
+      await journalStore.write(journal);
+      logger.info("Rollout is already in the intended state; nothing to do", {
+        runId,
+      });
       return await finish("no-op");
     }
 
@@ -956,8 +960,10 @@ export async function applyRollout(
     if (journal.phase !== "failed" && journal.phase !== "rolled-back") {
       journal = advance(journal, "failed", { completed: false }, clock);
       await journalStore.write(journal);
-      if (draft.canaryValidation === null) await finish("failed");
     }
+    // Every run leaves an evidence report, including one that failed in a way
+    // the branches above did not already record.
+    if (!written.evidence) await finish("failed");
     throw error;
   } finally {
     await held.release();

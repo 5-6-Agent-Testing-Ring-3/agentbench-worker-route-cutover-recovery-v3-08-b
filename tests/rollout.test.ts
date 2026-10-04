@@ -353,6 +353,28 @@ describe("applyRollout", () => {
     });
   });
 
+  it("still writes evidence when a post-cutover restore cannot be verified", async () => {
+    const h = await harness();
+    const edge = fakeEdge(h.api, {
+      broken: { [config.stableWorker]: "health" },
+    });
+    const fetcher: typeof fetch = async (input, init) => {
+      const url = new URL(String(input));
+      if (
+        url.hostname === config.productionHostname &&
+        h.api.routeFor(productionPattern)?.script === config.candidateWorker
+      )
+        return new Response(JSON.stringify({ error: "bad_gateway" }), {
+          status: 502,
+        });
+      return edge(input, init);
+    };
+    await expect(h.apply({ fetcher })).rejects.toThrow(RecoveryError);
+    const evidence = await readJson<Evidence>(h.evidencePath);
+    expect(evidence.outcome).toBe("failed");
+    expect(evidence.routeTransitions.length).toBeGreaterThan(0);
+  });
+
   it("restores production when an unexpected failure follows cutover", async () => {
     const h = await harness();
     h.api.script({ match: /DELETE \/zones/u, status: 400, times: 5 });
